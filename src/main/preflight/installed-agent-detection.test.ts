@@ -1,67 +1,32 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, expect, it, vi } from 'vitest'
 
-const { detectCommandsMock } = vi.hoisted(() => ({
-  detectCommandsMock: vi.fn(async (_commands: readonly string[]) => new Set<string>())
+const host = vi.hoisted(() => ({ wsl: false }))
+// Nothing on PATH: only Orca's own copies can make an agent installed.
+vi.mock('./agent-command-detection', () => ({ detectAgentCommandsOnHost: async () => new Set() }))
+vi.mock('../ipc/preflight/preflight-runtime-target', () => ({
+  getPreflightWslTarget: () => (host.wsl ? { distro: 'Ubuntu' } : null)
 }))
 
-vi.mock('./agent-command-detection', () => ({
-  detectAgentCommandsOnHost: detectCommandsMock
-}))
-vi.mock('../ipc/agent-detection-shell-path', () => ({
-  hydrateShellPathForAgentDetection: vi.fn(async () => undefined)
-}))
-vi.mock('../ipc/preflight-runtime-target', () => ({
-  getPreflightWslTarget: vi.fn(() => null)
-}))
+const { detectInstalledAgents } = await import('./installed-agent-detection')
+const { provideInstalledManagedAgents } = await import('./managed-agent-detection')
 
-import { detectInstalledAgents } from './installed-agent-detection'
+afterEach(() => {
+  host.wsl = false
+  provideInstalledManagedAgents(async () => [])
+})
 
-const originalPlatform = process.platform
+it("counts Orca's installed copies as installed agents on this host", async () => {
+  provideInstalledManagedAgents(async () => ['antigravity', 'grok'])
 
-describe('detectInstalledAgents disabled-agent filtering', () => {
-  beforeEach(() => {
-    detectCommandsMock.mockReset()
-  })
+  expect((await detectInstalledAgents()).sort()).toEqual(['antigravity', 'grok'])
+})
 
-  afterEach(() => {
-    Object.defineProperty(process, 'platform', { value: originalPlatform })
-  })
+it('leaves out a disabled agent, and a WSL guest Orca installed nothing in', async () => {
+  provideInstalledManagedAgents(async () => ['antigravity', 'grok'])
 
-  it('omits a disabled agent with a unique command from probes and results', async () => {
-    detectCommandsMock.mockImplementation(
-      async (commands) =>
-        new Set(commands.filter((command) => command === 'codex' || command === 'gemini'))
-    )
-
-    await expect(detectInstalledAgents()).resolves.toEqual(['codex', 'gemini'])
-    await expect(
-      detectInstalledAgents(undefined, { disabledTuiAgents: ['codex'] })
-    ).resolves.toEqual(['gemini'])
-    expect(detectCommandsMock).toHaveBeenLastCalledWith(expect.not.arrayContaining(['codex']), {
-      context: undefined
-    })
-  })
-
-  it('keeps a shared command for an enabled agent without reporting the disabled agent', async () => {
-    Object.defineProperty(process, 'platform', { value: 'linux' })
-    detectCommandsMock.mockImplementation(
-      async (commands) =>
-        new Set(commands.filter((command) => command === 'claude' || command === 'orca'))
-    )
-
-    await expect(
-      detectInstalledAgents(undefined, { disabledTuiAgents: ['claude'] })
-    ).resolves.toEqual(['claude-agent-teams'])
-    expect(detectCommandsMock).toHaveBeenCalledExactlyOnceWith(
-      expect.arrayContaining(['claude', 'orca']),
-      { context: undefined }
-    )
-
-    await expect(
-      detectInstalledAgents(undefined, { disabledTuiAgents: ['claude-agent-teams'] })
-    ).resolves.toEqual(['claude'])
-    expect(detectCommandsMock).toHaveBeenLastCalledWith(expect.not.arrayContaining(['orca']), {
-      context: undefined
-    })
-  })
+  expect(await detectInstalledAgents(undefined, { disabledTuiAgents: ['grok'] })).toEqual([
+    'antigravity'
+  ])
+  host.wsl = true
+  expect(await detectInstalledAgents()).toEqual([])
 })
